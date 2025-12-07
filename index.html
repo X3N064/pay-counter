@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Live Pay Counter</title>
+  <style>
+    :root {
+      --bg: #050509;
+      --fg: #f7f7ff;
+      --accent: #00f5ff;
+      --accent-soft: rgba(0, 245, 255, 0.15);
+    }
+
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      max-width: 480px;
+      margin: 60px auto;
+      text-align: center;
+      background-color: var(--bg);
+      color: var(--fg);
+    }
+
+    h1 {
+      margin-bottom: 8px;
+      letter-spacing: 0.06em;
+    }
+
+    .subtitle {
+      font-size: 0.9rem;
+      color: #a0a0c0;
+      margin-bottom: 24px;
+    }
+
+    .total {
+      font-size: 2.8rem;
+      font-weight: 700;
+      margin: 10px auto 24px;
+      display: inline-flex;
+      padding: 10px 18px;
+      border-radius: 999px;
+      background: radial-gradient(circle at top, var(--accent-soft), transparent);
+      box-shadow:
+        0 0 20px rgba(0, 0, 0, 0.8),
+        0 0 40px rgba(0, 245, 255, 0.2);
+    }
+
+    /* 롤링 숫자용 */
+    .roller-col {
+      position: relative;
+      width: 1.4em;
+      height: 1.4em;
+      overflow: hidden;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .roller-col.symbol {
+      font-size: 0.9em;
+      opacity: 0.9;
+    }
+
+    .roller-digits {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      transition: transform 0.2s ease-out;
+    }
+
+    .roller-digits > div {
+      height: 1.4em;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .row {
+      display: flex;
+      justify-content: space-between;
+      margin: 4px 0;
+      font-size: 0.95rem;
+    }
+
+    .label {
+      font-weight: 600;
+      color: #c4c4e0;
+    }
+
+    .value {
+      font-variant-numeric: tabular-nums;
+    }
+
+    button {
+      font-size: 0.95rem;
+      padding: 8px 18px;
+      margin: 6px;
+      cursor: pointer;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: linear-gradient(135deg, #15151f, #101018);
+      color: var(--fg);
+      transition: background 0.15s ease, transform 0.08s ease, box-shadow 0.15s ease;
+    }
+
+    button:hover {
+      background: linear-gradient(135deg, #1d1d2a, #14141f);
+      box-shadow: 0 0 10px rgba(0, 245, 255, 0.3);
+    }
+
+    button:active {
+      transform: translateY(1px) scale(0.99);
+      box-shadow: 0 0 4px rgba(0, 245, 255, 0.2);
+    }
+
+    .small {
+      font-size: 0.8rem;
+      color: #8080a0;
+      margin-top: 12px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Live Pay Counter</h1>
+  <div class="subtitle">Travel 21.94부터, 8h 이후 OT, 9.5h 이후 식대 자동</div>
+
+  <div class="total" id="total"></div>
+
+  <div class="row">
+    <span class="label">Travel allowance</span>
+    <span class="value" id="base">$0.00</span>
+  </div>
+  <div class="row">
+    <span class="label">Ordinary (≤ 8h)</span>
+    <span class="value" id="ord">$0.00</span>
+  </div>
+  <div class="row">
+    <span class="label">Overtime (&gt; 8h)</span>
+    <span class="value" id="ot">$0.00</span>
+  </div>
+  <div class="row">
+    <span class="label">Meal allowance (≥ 9.5h)</span>
+    <span class="value" id="meal">$0.00</span>
+  </div>
+  <div class="row">
+    <span class="label">Worked time</span>
+    <span class="value" id="timeWorked">0h 00m 00s</span>
+  </div>
+
+  <div style="margin-top: 20px;">
+    <button id="startBtn">Start</button>
+    <button id="stopBtn">Stop</button>
+    <button id="resetBtn">Reset</button>
+  </div>
+
+  <div class="small">
+    아래 세 줄만 페이슬립 보고 시급/식대로 바꾸면 됩니다.
+  </div>
+
+  <script>
+  // ===== 여기만 페이슬립 기준으로 바꾸면 됩니다 =====
+  const BASE_AMOUNT = 21.94;       // 하루 travel allowance
+  const ORD_RATE_PER_HOUR = 36.26; // Ordinary 시급
+  const OT_RATE_PER_HOUR  = 50.77; // Overtime 시급
+  const MEAL_ALLOWANCE    = 19;    // 식대 (9.5 시간 이상 근무 시)
+  // ===================================================
+  const EIGHT_HOURS = 8;
+  const MEAL_THRESHOLD_HOURS = 9.5;
+  const STORAGE_KEY = "payCounterState_v1"; // 상태 저장용 key
+
+  let running = false;
+  let startTimeMs = null;      // Date.now() 기준 시작 시각
+  let accumulatedSeconds = 0;  // Stop까지 누적된 초
+
+  const baseEl  = document.getElementById("base");
+  const ordEl   = document.getElementById("ord");
+  const otEl    = document.getElementById("ot");
+  const mealEl  = document.getElementById("meal");
+  const totalEl = document.getElementById("total");
+  const timeEl  = document.getElementById("timeWorked");
+
+  baseEl.textContent = "$" + BASE_AMOUNT.toFixed(2);
+  mealEl.textContent = "$0.00";
+
+  function getTotalWorkedSeconds() {
+    let sec = accumulatedSeconds;
+    if (running && startTimeMs !== null) {
+      const now = Date.now();
+      sec += (now - startTimeMs) / 1000;
+    }
+    return sec;
+  }
+
+  function formatTime(seconds) {
+    const s = Math.floor(seconds % 60);
+    const m = Math.floor((seconds / 60) % 60);
+    const h = Math.floor(seconds / 3600);
+    const pad = (n) => n.toString().padStart(2, "0");
+    return `${h}h ${pad(m)}m ${pad(s)}s`;
+  }
+
+  // ─── 롤링 숫자 렌더링 ────────────────────────────────
+  function buildRollerColumns(str) {
+    totalEl.innerHTML = "";
+    for (let ch of str) {
+      const col = document.createElement("div");
+      col.classList.add("roller-col");
+
+      if (/\d/.test(ch)) {
+        col.classList.add("digit");
+        const inner = document.createElement("div");
+        inner.classList.add("roller-digits");
+        for (let d = 0; d <= 9; d++) {
+          const slot = document.createElement("div");
+          slot.textContent = d;
+          inner.appendChild(slot);
+        }
+        col.appendChild(inner);
+      } else {
+        col.classList.add("symbol");
+        col.textContent = ch;
+      }
+      totalEl.appendChild(col);
+    }
+  }
+
+  function updateRollerValue(value) {
+    const str = "$" + value.toFixed(2); // 예: $123.45
+    if (totalEl.children.length !== str.length) {
+      buildRollerColumns(str);
+    }
+    for (let i = 0; i < str.length; i++) {
+      const ch = str[i];
+      const col = totalEl.children[i];
+      if (!col) continue;
+
+      if (col.classList.contains("digit") && /\d/.test(ch)) {
+        const digit = parseInt(ch, 10);
+        const inner = col.querySelector(".roller-digits");
+        if (!inner) continue;
+        const digitHeight = col.clientHeight || 0;
+        inner.style.transform = `translateY(${-digit * digitHeight}px)`;
+      } else if (col.classList.contains("symbol")) {
+        col.textContent = ch;
+      }
+    }
+  }
+  // ─────────────────────────────────────────────────────
+
+  function saveState() {
+    const state = {
+      running,
+      startTimeMs,
+      accumulatedSeconds
+    };
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    } catch (e) {
+      // 저장 실패해도 앱 동작에는 영향 없게 무시
+    }
+  }
+
+  function loadState() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      const state = JSON.parse(raw);
+      if (typeof state.accumulatedSeconds === "number") {
+        accumulatedSeconds = state.accumulatedSeconds;
+      }
+      if (state.running && typeof state.startTimeMs === "number") {
+        running = true;
+        startTimeMs = state.startTimeMs;
+      }
+    } catch (e) {
+      // 깨진 데이터면 무시하고 새로 시작
+    }
+  }
+
+  function render() {
+    const totalSec = getTotalWorkedSeconds();
+    const totalHours = totalSec / 3600;
+
+    const ordHours = Math.min(totalHours, EIGHT_HOURS);
+    const otHours  = Math.max(0, totalHours - EIGHT_HOURS);
+
+    const ordMoney = ordHours * ORD_RATE_PER_HOUR;
+    const otMoney  = otHours  * OT_RATE_PER_HOUR;
+
+    const base = BASE_AMOUNT;
+    const meal = totalHours >= MEAL_THRESHOLD_HOURS ? MEAL_ALLOWANCE : 0;
+
+    const total = base + ordMoney + otMoney + meal;
+
+    baseEl.textContent  = "$" + base.toFixed(2);
+    ordEl.textContent   = "$" + ordMoney.toFixed(2);
+    otEl.textContent    = "$" + otMoney.toFixed(2);
+    mealEl.textContent  = "$" + meal.toFixed(2);
+    timeEl.textContent  = formatTime(totalSec);
+
+    updateRollerValue(total);
+  }
+
+  // 버튼 동작
+  document.getElementById("startBtn").onclick = () => {
+    if (running) return;
+    running = true;
+    startTimeMs = Date.now();
+    saveState();
+  };
+
+  document.getElementById("stopBtn").onclick = () => {
+    if (running) {
+      // 지금까지 시간 확정해서 누적에 반영
+      const sec = getTotalWorkedSeconds();
+      accumulatedSeconds = sec;
+      running = false;
+      startTimeMs = null;
+    }
+    saveState();
+    render();
+  };
+
+  document.getElementById("resetBtn").onclick = () => {
+    running = false;
+    startTimeMs = null;
+    accumulatedSeconds = 0;
+    saveState();
+    render();
+  };
+
+  // 처음 로드할 때 이전 상태 복구
+  loadState();
+
+  // 계속 갱신
+  function loop() {
+    render();
+    requestAnimationFrame(loop);
+  }
+  loop();
+</script>
+
+</body>
+</html>
